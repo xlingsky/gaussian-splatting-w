@@ -11,6 +11,7 @@
 
 from scene.cameras import Camera
 import numpy as np
+import os
 from utils.general_utils import PILtoTorch
 from utils.graphics_utils import fov2focal
 
@@ -58,6 +59,17 @@ def cameraList_from_camInfos(cam_infos, resolution_scale, args):
         camera_list.append(loadCam(args, id, c, resolution_scale))
 
     return camera_list
+
+
+def save_color_transform(dirpath, camlist):
+    for c in camlist:
+        np.save(os.path.join(dirpath, f"{c.image_name}.npy"), c.a)
+    return len(camlist)
+
+def load_color_transform(dirpath, camlist):
+    for i in range(len(camlist)):
+        camlist[i].a = np.load(os.path.join(dirpath, f"{camlist[i].image_name}.npy"))
+    return camlist
 
 def camera_to_JSON(id, camera : Camera):
     Rt = np.zeros((4, 4))
