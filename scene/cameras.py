@@ -11,6 +11,7 @@
 
 import torch
 from torch import nn
+import torch.optim as optim
 import numpy as np
 from utils.graphics_utils import getWorld2View2, getProjectionMatrix
 
@@ -56,10 +57,19 @@ class Camera(nn.Module):
         self.full_proj_transform = (self.world_view_transform.unsqueeze(0).bmm(self.projection_matrix.unsqueeze(0))).squeeze(0)
         self.camera_center = self.world_view_transform.inverse()[3, :3]
 
-        self.a = np.ones_like(self.original_image)
+        self.a = torch.randn_like(self.original_image)
     
-def transform_color(img, a):
-    return a*img
+class Transform(nn.Module):
+    def __init__(self, a, requires_grad = False) -> None:
+        super(Transform, self).__init__()
+        self._tf = nn.Parameter(a, requires_grad=requires_grad).cuda()
+
+    @property
+    def get_tf(self):
+        return self._tf
+
+    def forward(self, img):
+        return self._tf*img
 
 class MiniCam:
     def __init__(self, width, height, fovy, fovx, znear, zfar, world_view_transform, full_proj_transform):

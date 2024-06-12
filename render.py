@@ -10,7 +10,7 @@
 #
 
 import torch
-from scene import Scene, transform_color
+from scene import Scene, Transform
 import os
 from tqdm import tqdm
 from os import makedirs
@@ -34,9 +34,8 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
         torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
         torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
         if name == 'train':
-            a = torch.tensor(view.a)
-            ax = transform_color(rendering, a)
-            torchvision.utils.save_image(a, os.path.join(render_path, '{0:05d}'.format(idx) + "_a.tif"))
+            a = Transform(view.a)
+            ax = a.forward(rendering)
             torchvision.utils.save_image(ax, os.path.join(render_path, '{0:05d}'.format(idx) + "_ax.tif"))
             torchvision.utils.save_image(torch.abs(gt-ax), os.path.join(render_path, '{0:05d}'.format(idx) + "_dx.tif"))
 
