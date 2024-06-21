@@ -131,3 +131,22 @@ def safe_state(silent):
     np.random.seed(0)
     torch.manual_seed(0)
     torch.cuda.set_device(torch.device("cuda:0"))
+
+def getGaussianSigma(ksize):
+    return 0.3*((ksize-1)*0.5-1)+0.8
+
+def getGaussianKernel( ksize, sigma = None):
+    assert ksize-ksize//2*2 ==  1
+    templ = np.zeros((ksize,), dtype = np.float32)
+    if sigma is None:
+        sigma = getGaussianSigma(ksize)
+    r = (ksize-1)//2
+    sigma2 = 2*sigma**2
+    sum = 0
+    for i in range(r):
+        templ[i] = np.exp(-(i-r)**2/sigma2)
+        templ[ksize-1-i] = templ[i]
+        sum += 2*templ[i]
+    templ[r] = np.exp(0)
+    sum += templ[r]
+    return templ/sum

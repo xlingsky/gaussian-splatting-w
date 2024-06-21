@@ -24,7 +24,7 @@ class Scene:
 
     gaussians : GaussianModel
 
-    def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0]):
+    def __init__(self, args : ModelParams, gaussians : GaussianModel, load_iteration=None, shuffle=False, resolution_scales=[1.0]):
         """b
         :param path: Path to colmap scene main folder.
         """
@@ -70,6 +70,8 @@ class Scene:
 
         self.cameras_extent = scene_info.nerf_normalization["radius"]
 
+        self.gaussians.max_img_num = len(scene_info.train_cameras)
+
         for resolution_scale in resolution_scales:
             print("Loading Training Cameras")
             self.train_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.train_cameras, resolution_scale, args)
@@ -87,10 +89,11 @@ class Scene:
         else:
             self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent)
 
-    def save(self, iteration):
+    def save(self, iteration, colortrans = False):
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))
         self.gaussians.save_ply(os.path.join(point_cloud_path, "point_cloud.ply"))
-        save_color_transform(point_cloud_path, self.getTrainCameras())
+        if colortrans:
+            save_color_transform(point_cloud_path, self.getTrainCameras())
 
     def getTrainCameras(self, scale=1.0):
         return self.train_cameras[scale]

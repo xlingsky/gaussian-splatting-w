@@ -33,11 +33,11 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
         gt = view.original_image[0:3, :, :]
         torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
         torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
-        if name == 'train':
-            a = Transform(view.a)
-            ax = a.forward(rendering)
-            torchvision.utils.save_image(ax, os.path.join(render_path, '{0:05d}'.format(idx) + "_ax.tif"))
-            torchvision.utils.save_image(torch.abs(gt-ax), os.path.join(render_path, '{0:05d}'.format(idx) + "_dx.tif"))
+        # if name == 'train':
+        #     a = Transform(view.a)
+        #     ax = a.forward(rendering)
+        #     torchvision.utils.save_image(ax, os.path.join(render_path, '{0:05d}'.format(idx) + "_ax.tif"))
+        #     torchvision.utils.save_image(torch.abs(gt-ax), os.path.join(render_path, '{0:05d}'.format(idx) + "_dx.tif"))
 
 def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool):
     with torch.no_grad():

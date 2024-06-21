@@ -11,14 +11,14 @@
 
 import torch
 import numpy as np
-from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation
+from utils.general_utils import inverse_sigmoid, get_expon_lr_func, build_rotation, getGaussianSigma, getGaussianKernel
 from torch import nn
 import os
 from utils.system_utils import mkdir_p
 from plyfile import PlyData, PlyElement
 from utils.sh_utils import RGB2SH
 from simple_knn._C import distCUDA2
-from utils.graphics_utils import BasicPointCloud
+from utils.graphics_utils import BasicPointCloud, ndc2pix
 from utils.general_utils import strip_symmetric, build_scaling_rotation
 
 class GaussianModel:
@@ -50,6 +50,7 @@ class GaussianModel:
         self._scaling = torch.empty(0)
         self._rotation = torch.empty(0)
         self._opacity = torch.empty(0)
+        self._transient = torch.empty(0)
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
         self.denom = torch.empty(0)
@@ -57,6 +58,8 @@ class GaussianModel:
         self.percent_dense = 0
         self.spatial_lr_scale = 0
         self.setup_functions()
+
+        self.max_img_num = 0
 
     def capture(self):
         return (
@@ -67,6 +70,7 @@ class GaussianModel:
             self._scaling,
             self._rotation,
             self._opacity,
+            self._transient,
             self.max_radii2D,
             self.xyz_gradient_accum,
             self.denom,
@@ -82,6 +86,7 @@ class GaussianModel:
         self._scaling, 
         self._rotation, 
         self._opacity,
+        self._transient,
         self.max_radii2D, 
         xyz_gradient_accum, 
         denom,
@@ -113,6 +118,10 @@ class GaussianModel:
     @property
     def get_opacity(self):
         return self.opacity_activation(self._opacity)
+
+    @property
+    def get_transient(self):
+        return self._transient
     
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
@@ -144,6 +153,7 @@ class GaussianModel:
         self._scaling = nn.Parameter(scales.requires_grad_(True))
         self._rotation = nn.Parameter(rots.requires_grad_(True))
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
+        self._transient = torch.zeros((self.get_xyz.shape[0], self.max_img_num), device="cuda")
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
     def training_setup(self, training_args):
@@ -182,6 +192,8 @@ class GaussianModel:
         for i in range(self._features_rest.shape[1]*self._features_rest.shape[2]):
             l.append('f_rest_{}'.format(i))
         l.append('opacity')
+        for i in range(self._transient.shape[1]):
+            l.append('trans_{}'.format(i))
         for i in range(self._scaling.shape[1]):
             l.append('scale_{}'.format(i))
         for i in range(self._rotation.shape[1]):
@@ -196,13 +208,14 @@ class GaussianModel:
         f_dc = self._features_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
         f_rest = self._features_rest.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
         opacities = self._opacity.detach().cpu().numpy()
+        transients = self._transient.detach().cpu().numpy()
         scale = self._scaling.detach().cpu().numpy()
         rotation = self._rotation.detach().cpu().numpy()
 
         dtype_full = [(attribute, 'f4') for attribute in self.construct_list_of_attributes()]
 
         elements = np.empty(xyz.shape[0], dtype=dtype_full)
-        attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)
+        attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, transients, scale, rotation), axis=1)
         elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, 'vertex')
         PlyData([el]).write(path)
@@ -234,6 +247,13 @@ class GaussianModel:
         # Reshape (P,F*SH_coeffs) to (P, F, SH_coeffs except DC)
         features_extra = features_extra.reshape((features_extra.shape[0], 3, (self.max_sh_degree + 1) ** 2 - 1))
 
+        transient_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("trans_")]
+        transient_names = sorted(transient_names, key = lambda x: int(x.split('_')[-1]))
+        transients = np.zeros((xyz.shape[0], len(transient_names)))
+        assert len(transient_names)==self.max_img_num
+        for idx, attr_name in enumerate(transient_names):
+            transients[:, idx] = np.asanyarray(plydata.elements[0][attr_name])
+
         scale_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("scale_")]
         scale_names = sorted(scale_names, key = lambda x: int(x.split('_')[-1]))
         scales = np.zeros((xyz.shape[0], len(scale_names)))
@@ -252,6 +272,7 @@ class GaussianModel:
         self._opacity = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device="cuda").requires_grad_(True))
         self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))
         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
+        self._transient = torch.tensor(transients, dtype=torch.float, device="cuda")
 
         self.active_sh_degree = self.max_sh_degree
 
@@ -400,8 +421,36 @@ class GaussianModel:
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
         self.prune_points(prune_mask)
 
+        self._transient = torch.zeros((self.get_xyz.shape[0], self.max_img_num), device="cuda")
+
         torch.cuda.empty_cache()
 
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)
         self.denom[update_filter] += 1
+
+    def update_transient(self, viewpoint_camera, transient_map, update_filter, radii):
+        imgid = viewpoint_camera.uid
+        full_proj_matrix = viewpoint_camera.full_proj_transform
+        indices = np.nonzero(update_filter)
+        h,w = transient_map.shape
+        max_r = min(h,w)//4
+        for i  in indices:
+            p_orig = torch.cat((self.get_xyz[i], torch.tensor([[1]], device='cuda')), dim=1)
+            p_hom = (p_orig.matmul(full_proj_matrix))[0]
+            p_w = 1.0/(p_hom[3]+0.0000001)
+            x,y = int(ndc2pix(p_hom[0]*p_w, w)+0.5), int(ndc2pix(p_hom[1]*p_w, h)+0.5)
+            if x < 0 or x>=w or y<0 or y>=h:
+                continue
+            self._transient[i, imgid] = transient_map[y, x]
+
+            # x,y = int(ndc2pix(p_hom[0]*p_w, w)+0.5), int(ndc2pix(p_hom[1]*p_w, h)+0.5)
+            # r0 = int(radii[i])
+            # r = min(r0, max_r)
+            # if x+r < 0 or x-r>=w or y+r<0 or y+r>=h:
+            #     continue
+            # t = torch.from_numpy(getGaussianKernel(2*r+1, getGaussianSigma(r0*2+1)))
+            # templ = torch.matmul(t.unsqueeze(1),t.unsqueeze(0)).cuda()
+            # map = torch.zeros((2*r+1, 2*r+1), device='cuda')
+            # map[max(r-y,0):min(h+r-y,2*r+1), max(r-x,0):min(w+r-x,2*r+1)] = transient_map[max(y-r,0):min(y+r+1, h), max(x-r,0):min(x+r+1, w)]
+            # self._transient[i, imgid] = (map.mul(templ)).sum()

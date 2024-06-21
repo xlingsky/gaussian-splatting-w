@@ -22,13 +22,14 @@ from tqdm import tqdm
 from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
+from utils.transient_utils import update_transient
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
 except ImportError:
     TENSORBOARD_FOUND = False
 
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
+def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, transforming_color = False):
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
@@ -45,7 +46,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     iter_end = torch.cuda.Event(enable_timing = True)
 
     viewpoint_stack = None
-    to_transform_color = False
+    to_refine_color_transform = False
     ema_loss_for_log = 0.0
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
@@ -87,8 +88,13 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         render_pkg = render(viewpoint_cam, gaussians, pipe, bg)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
-        color_a = Transform(viewpoint_cam.a, requires_grad=to_transform_color)
-        tf_image = color_a.forward(image)
+        if transforming_color:
+            color_a = Transform( torch.rand_like(image), requires_grad=to_refine_color_transform) #viewpoint_cam.a
+            tf_image = color_a(image)
+        else:
+            tf_image = image
+
+        # update_transient( gaussians, viewpoint_cam, viewpoint_cam.a[0], visibility_filter, radii)
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
@@ -98,7 +104,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         iter_end.record()
 
-        if to_transform_color:
+        if transforming_color and to_refine_color_transform:
             scene.getTrainCameras()[viewpoint_cam.uid].a = color_a.get_tf.detach().cpu()
 
         with torch.no_grad():

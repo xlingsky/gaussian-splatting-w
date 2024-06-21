@@ -69,7 +69,10 @@ def save_color_transform(dirpath, camlist):
 
 def load_color_transform(dirpath, camlist):
     for i in range(len(camlist)):
-        camlist[i].a = torch.load(os.path.join(dirpath, f"{camlist[i].image_name}.pt"))
+        try:
+            camlist[i].a = torch.load(os.path.join(dirpath, f"{camlist[i].image_name}.pt"))
+        except:
+            continue
     return camlist
 
 def camera_to_JSON(id, camera : Camera):
