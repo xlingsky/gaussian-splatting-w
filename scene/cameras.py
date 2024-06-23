@@ -57,7 +57,7 @@ class Camera(nn.Module):
         self.full_proj_transform = (self.world_view_transform.unsqueeze(0).bmm(self.projection_matrix.unsqueeze(0))).squeeze(0)
         self.camera_center = self.world_view_transform.inverse()[3, :3]
 
-        self.a = torch.rand_like(self.original_image)
+        self.a = None #torch.rand_like(self.original_image)
     
 class Transform(nn.Module):
     def __init__(self, a, requires_grad = False) -> None:

@@ -50,7 +50,7 @@ class GaussianModel:
         self._scaling = torch.empty(0)
         self._rotation = torch.empty(0)
         self._opacity = torch.empty(0)
-        self._transient = torch.empty(0)
+        self._transient = None
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
         self.denom = torch.empty(0)
@@ -153,7 +153,7 @@ class GaussianModel:
         self._scaling = nn.Parameter(scales.requires_grad_(True))
         self._rotation = nn.Parameter(rots.requires_grad_(True))
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
-        self._transient = torch.zeros((self.get_xyz.shape[0], self.max_img_num), device="cuda")
+        self._transient = None #torch.zeros((self.get_xyz.shape[0], self.max_img_num), device="cuda")
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
     def training_setup(self, training_args):
@@ -192,8 +192,6 @@ class GaussianModel:
         for i in range(self._features_rest.shape[1]*self._features_rest.shape[2]):
             l.append('f_rest_{}'.format(i))
         l.append('opacity')
-        for i in range(self._transient.shape[1]):
-            l.append('trans_{}'.format(i))
         for i in range(self._scaling.shape[1]):
             l.append('scale_{}'.format(i))
         for i in range(self._rotation.shape[1]):
@@ -208,17 +206,19 @@ class GaussianModel:
         f_dc = self._features_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
         f_rest = self._features_rest.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
         opacities = self._opacity.detach().cpu().numpy()
-        transients = self._transient.detach().cpu().numpy()
         scale = self._scaling.detach().cpu().numpy()
         rotation = self._rotation.detach().cpu().numpy()
 
         dtype_full = [(attribute, 'f4') for attribute in self.construct_list_of_attributes()]
 
         elements = np.empty(xyz.shape[0], dtype=dtype_full)
-        attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, transients, scale, rotation), axis=1)
+        attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)
         elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, 'vertex')
         PlyData([el]).write(path)
+
+        if self._transient is not None:
+            torch.save(self._transient, os.path.splitext(path)[0]+'.pt')
 
     def reset_opacity(self):
         opacities_new = inverse_sigmoid(torch.min(self.get_opacity, torch.ones_like(self.get_opacity)*0.01))
@@ -247,13 +247,6 @@ class GaussianModel:
         # Reshape (P,F*SH_coeffs) to (P, F, SH_coeffs except DC)
         features_extra = features_extra.reshape((features_extra.shape[0], 3, (self.max_sh_degree + 1) ** 2 - 1))
 
-        transient_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("trans_")]
-        transient_names = sorted(transient_names, key = lambda x: int(x.split('_')[-1]))
-        transients = np.zeros((xyz.shape[0], len(transient_names)))
-        assert len(transient_names)==self.max_img_num
-        for idx, attr_name in enumerate(transient_names):
-            transients[:, idx] = np.asanyarray(plydata.elements[0][attr_name])
-
         scale_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("scale_")]
         scale_names = sorted(scale_names, key = lambda x: int(x.split('_')[-1]))
         scales = np.zeros((xyz.shape[0], len(scale_names)))
@@ -272,9 +265,11 @@ class GaussianModel:
         self._opacity = nn.Parameter(torch.tensor(opacities, dtype=torch.float, device="cuda").requires_grad_(True))
         self._scaling = nn.Parameter(torch.tensor(scales, dtype=torch.float, device="cuda").requires_grad_(True))
         self._rotation = nn.Parameter(torch.tensor(rots, dtype=torch.float, device="cuda").requires_grad_(True))
-        self._transient = torch.tensor(transients, dtype=torch.float, device="cuda")
 
         self.active_sh_degree = self.max_sh_degree
+
+        if os.path.exists(os.path.splitext(path)[0]+'.pt'):
+            self._transient = torch.load(os.path.splitext(path)[0]+'.pt').to("cuda")
 
     def replace_tensor_to_optimizer(self, tensor, name):
         optimizable_tensors = {}
@@ -421,7 +416,8 @@ class GaussianModel:
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
         self.prune_points(prune_mask)
 
-        self._transient = torch.zeros((self.get_xyz.shape[0], self.max_img_num), device="cuda")
+        if self._transient is not None:
+            self._transient = torch.zeros((self.get_xyz.shape[0], self.max_img_num), device="cuda")
 
         torch.cuda.empty_cache()
 
