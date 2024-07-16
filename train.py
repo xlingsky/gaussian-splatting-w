@@ -71,7 +71,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         gaussians.update_learning_rate(iteration)
 
         # Every 1000 its we increase the levels of SH up to a maximum degree
-        if iteration % 1000 == 0:
+        if  iteration > opt.densify_until_iter and iteration % 1000 == 0:
             gaussians.oneupSHdegree()
 
         # Pick a random Camera
@@ -88,11 +88,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         render_pkg = render(viewpoint_cam, gaussians, pipe, bg)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
-        if transforming_color:
-            # color_a = Transform( torch.rand_like(image), requires_grad=to_refine_color_transform) #viewpoint_cam.a
-            # tf_image = color_a(image)
-            color_a = torch.rand(1, device="cuda")
-            tf_image = color_a*image
+        if transforming_color and iteration < opt.densify_until_iter:
+            #torch.randn_like(image)/2+1
+            color_a = Transform( torch.rand_like(image), requires_grad=to_refine_color_transform) #viewpoint_cam.a 
+            tf_image = color_a(image)
         else:
             tf_image = image
 
@@ -106,8 +105,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         iter_end.record()
 
-        if transforming_color and to_refine_color_transform:
-            scene.getTrainCameras()[viewpoint_cam.uid].a = color_a.get_tf.detach().cpu()
+        # if transforming_color and to_refine_color_transform:
+        #     scene.getTrainCameras()[viewpoint_cam.uid].a = color_a.get_tf.detach().cpu()
 
         with torch.no_grad():
             # Progress bar

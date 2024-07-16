@@ -22,21 +22,24 @@ from argparse import ArgumentParser
 from arguments import ModelParams, PipelineParams, get_combined_args
 from gaussian_renderer import GaussianModel
 
-def render_set(model_path, name, iteration, views, gaussians, pipeline, background):
+def render_set(model_path, name, iteration, views, gaussians, pipeline, background, output_gt = False):
     render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
-    gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
-
     makedirs(render_path, exist_ok=True)
-    makedirs(gts_path, exist_ok=True)
+    if output_gt:
+        gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
+        makedirs(gts_path, exist_ok=True)
 
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
         rendering = render(view, gaussians, pipeline, background)["render"]
         gt = view.original_image[0:3, :, :]
         torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
-        torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
-        dt = (rendering-gt+1)/2
-        torchvision.utils.save_image(dt, os.path.join(render_path, '{0:05d}'.format(idx) + "_dx.png"))
-        torchvision.utils.save_image(ssim_map(rendering, gt), os.path.join(render_path, '{0:05d}'.format(idx) + "_sx.png"))
+        if output_gt:
+            torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
+        # dt = (rendering-gt+1)/2
+        # torchvision.utils.save_image(dt, os.path.join(render_path, '{0:05d}'.format(idx) + "_dx.png"))
+        # torchvision.utils.save_image(ssim_map(rendering, gt), os.path.join(render_path, '{0:05d}'.format(idx) + "_sx.png"))
+        dt = ssim_map(rendering, gt)
+        torchvision.utils.save_image(dt.min(dim=0).values, os.path.join(render_path, '{0:05d}'.format(idx) + "_t.png"))
         # if name == 'train':
         #     a = Transform(view.a)
         #     ax = a.forward(rendering)
