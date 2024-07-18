@@ -15,6 +15,7 @@ import os
 import torch
 from utils.general_utils import PILtoTorch
 from utils.graphics_utils import fov2focal
+import torchvision
 
 WARNED = False
 
@@ -64,7 +65,7 @@ def cameraList_from_camInfos(cam_infos, resolution_scale, args):
 
 def save_color_transform(dirpath, camlist):
     for c in camlist:
-        torch.save(c.a, os.path.join(dirpath, f"{c.image_name}.pt"))
+        torchvision.utils.save_image(c.transient, os.path.join(dirpath, f"{c.image_name}.png"))
     return len(camlist)
 
 def load_color_transform(dirpath, camlist):

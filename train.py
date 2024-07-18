@@ -12,11 +12,13 @@
 import os
 import torch
 from random import randint
-from utils.loss_utils import l1_loss, ssim
+import torchvision
+from utils.loss_utils import l1_loss, ssim, ssim_map
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel, Transform
 from utils.general_utils import safe_state
+from utils.system_utils import mkdir_p
 import uuid
 from tqdm import tqdm
 from utils.image_utils import psnr
@@ -29,7 +31,9 @@ try:
 except ImportError:
     TENSORBOARD_FOUND = False
 
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, transforming_color):
+def training(
+    dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from,
+    transforming_color, transient_iterations, transient_activation):
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree)
@@ -46,10 +50,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     iter_end = torch.cuda.Event(enable_timing = True)
 
     viewpoint_stack = None
-    to_refine_color_transform = False
     ema_loss_for_log = 0.0
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
+    sh_from_iter = max(transient_iterations)+1
     for iteration in range(first_iter, opt.iterations + 1):        
         if network_gui.conn == None:
             network_gui.try_connect()
@@ -70,14 +74,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         gaussians.update_learning_rate(iteration)
 
-        # Every 1000 its we increase the levels of SH up to a maximum degree
-        if  iteration > opt.densify_until_iter and iteration % 1000 == 0:
-            gaussians.oneupSHdegree()
-
         # Pick a random Camera
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
         viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
+
+        # Every 1000 its we increase the levels of SH up to a maximum degree
+        if  sh_from_iter and iteration % 1000 == 0:
+            gaussians.oneupSHdegree()
 
         # Render
         if (iteration - 1) == debug_from:
@@ -88,25 +92,26 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         render_pkg = render(viewpoint_cam, gaussians, pipe, bg)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
-        if transforming_color and iteration < opt.densify_until_iter:
+        # Loss
+        gt_image = viewpoint_cam.original_image.cuda()
+
+        if transforming_color:
             #torch.randn_like(image)/2+1
-            color_a = Transform( torch.rand_like(image), requires_grad=to_refine_color_transform) #viewpoint_cam.a 
-            tf_image = color_a(image)
+            if viewpoint_cam.transient is None:
+                color_a =  torch.rand_like(image)
+            else:
+                t = viewpoint_cam.transient.cuda()
+                color_a = 1-(1-t)*torch.rand_like(image)
+            tf_image = color_a*image
         else:
             tf_image = image
 
-        # update_transient( gaussians, viewpoint_cam, viewpoint_cam.a[0], visibility_filter, radii)
-
-        # Loss
-        gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(tf_image, gt_image)
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(tf_image, gt_image))
+
         loss.backward()
 
         iter_end.record()
-
-        # if transforming_color and to_refine_color_transform:
-        #     scene.getTrainCameras()[viewpoint_cam.uid].a = color_a.get_tf.detach().cpu()
 
         with torch.no_grad():
             # Progress bar
@@ -116,6 +121,20 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 progress_bar.update(10)
             if iteration == opt.iterations:
                 progress_bar.close()
+
+            if (iteration in transient_iterations):
+                print("\n[ITER {}] Updating Transient".format(iteration))
+                transient_path = os.path.join(scene.model_path, "transient/iteration_{}".format(iteration))
+                mkdir_p(transient_path)
+                for idx, view in enumerate(tqdm(scene.getTrainCameras(), desc="transient progress")):
+                    rendering = render(view, gaussians, pipe, bg)["render"]
+                    gt = view.original_image.cuda()
+                    dt = ssim_map(rendering, gt)
+                    dt = dt.min(dim=0).values
+                    dt[dt<transient_activation[0]] = 0
+                    dt[dt>transient_activation[1]] = 1
+                    scene.getTrainCameras()[idx].transient = dt.cpu()
+                    torchvision.utils.save_image(scene.getTrainCameras()[idx].transient, os.path.join(transient_path, '{0:05d}'.format(idx) + ".png"))
 
             # Log and save
             training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background))
@@ -220,6 +239,8 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)
     parser.add_argument("--transform_color", action="store_true", default=False)
+    parser.add_argument("--transient_iterations", nargs="+", type=int, default=[7_000])
+    parser.add_argument("--transient_activation", nargs="+", type=int, default=[0.1, 0.8])
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
     
@@ -231,7 +252,9 @@ if __name__ == "__main__":
     # Start GUI server, configure and run training
     network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, args.transform_color)
+    training(
+        lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from,
+        args.transform_color, args.transient_iterations, args.transient_activation)
 
     # All done
     print("\nTraining complete.")

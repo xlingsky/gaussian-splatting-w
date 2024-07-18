@@ -1,0 +1,3 @@
+1) appearance learning & color shifting, e.g. [fountain]01418.png
+2) check why some occluders missing detected and some high transient area has been learned: e.g. [fountain]00312.png 00314.png
+3) the resolution degrades & low overlap region unrestructed, e.g. [fountain]00331.png
