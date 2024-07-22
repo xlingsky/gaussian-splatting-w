@@ -188,7 +188,10 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
 
         frames = contents["frames"]
         for idx, frame in enumerate(frames):
-            cam_name = os.path.join(path, frame["file_path"] + extension)
+            if os.path.splitext(frame["file_path"])[1] == '':
+                cam_name = os.path.join(path, frame["file_path"] + extension)
+            else:
+                cam_name = os.path.join(path, frame["file_path"])
 
             # NeRF 'transform_matrix' is a camera-to-world transform
             c2w = np.array(frame["transform_matrix"])
@@ -224,11 +227,14 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
 def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
     print("Reading Training Transforms")
     train_cam_infos = readCamerasFromTransforms(path, "transforms_train.json", white_background, extension)
-    print("Reading Test Transforms")
-    test_cam_infos = readCamerasFromTransforms(path, "transforms_test.json", white_background, extension)
+    if os.path.exists(os.path.join(path, "transforms_test.json")):
+        print("Reading Test Transforms")
+        test_cam_infos = readCamerasFromTransforms(path, "transforms_test.json", white_background, extension)
     
-    if not eval:
-        train_cam_infos.extend(test_cam_infos)
+        if not eval:
+            train_cam_infos.extend(test_cam_infos)
+            test_cam_infos = []
+    else:
         test_cam_infos = []
 
     nerf_normalization = getNerfppNorm(train_cam_infos)

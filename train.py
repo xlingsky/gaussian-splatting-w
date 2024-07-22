@@ -49,6 +49,9 @@ def training(
     iter_start = torch.cuda.Event(enable_timing = True)
     iter_end = torch.cuda.Event(enable_timing = True)
 
+    transient_iterations = [5*len(scene.getTrainCameras())]
+    opt.densify_until_iter = transient_iterations[0]
+
     viewpoint_stack = None
     ema_loss_for_log = 0.0
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
